@@ -1,0 +1,22 @@
+# Dependencies
+/deps/
+
+# Build
+/_build/
+
+# Mix
+*.ez
+mix.lock
+
+# Dialyzer
+/priv/plts/*.plt
+/priv/plts/*.plt.hash
+
+# Elixir
+/cover/
+*.beam
+
+# Misc
+.DS_Store
+*.swp
+*.swo
