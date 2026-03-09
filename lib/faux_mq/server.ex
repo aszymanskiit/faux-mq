@@ -15,6 +15,13 @@ defmodule FauxMQ.Server do
 
   alias FauxMQ.{MockServer, Protocol}
 
+  @type stored_message :: %{
+          body: binary(),
+          exchange: binary(),
+          routing_key: binary(),
+          header_payload: binary() | nil
+        }
+
   defstruct [
     :listener,
     :host,
@@ -22,7 +29,8 @@ defmodule FauxMQ.Server do
     :mock_server,
     next_connection_id: 1,
     connections: %{},
-    queues: %{}
+    queues: %{},
+    bindings: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -32,7 +40,8 @@ defmodule FauxMQ.Server do
           mock_server: pid(),
           next_connection_id: non_neg_integer(),
           connections: %{non_neg_integer() => pid()},
-          queues: %{binary() => [binary()]}
+          queues: %{binary() => [stored_message()]},
+          bindings: %{optional({binary(), binary()}) => binary()}
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -58,7 +67,19 @@ defmodule FauxMQ.Server do
   @impl true
   def init(opts) do
     host = Keyword.get(opts, :host, Application.fetch_env!(:faux_mq, :default_host))
-    port = Keyword.get(opts, :port, Application.fetch_env!(:faux_mq, :default_port))
+
+    # Allow callers to pass port: 0 as a sentinel meaning
+    # "use the configured default_port" instead of asking the OS
+    # for an ephemeral port. This is important for umbrella apps
+    # that expect a stable port like 5672 (RabbitMQ default).
+    raw_port = Keyword.get(opts, :port, :use_default)
+
+    port =
+      case raw_port do
+        0 -> Application.fetch_env!(:faux_mq, :default_port)
+        :use_default -> Application.fetch_env!(:faux_mq, :default_port)
+        other -> other
+      end
 
     {:ok, listener} =
       :gen_tcp.listen(port, [
@@ -77,7 +98,11 @@ defmodule FauxMQ.Server do
       listener: listener,
       host: host,
       port: actual_port,
-      mock_server: mock_server
+      mock_server: mock_server,
+      queues: %{},
+      bindings: %{},
+      connections: %{},
+      next_connection_id: 1
     }
 
     send(self(), :accept)
@@ -134,11 +159,44 @@ defmodule FauxMQ.Server do
     {:reply, count, %{state | queues: queues}}
   end
 
-  def handle_call({:basic_publish, exchange, routing_key, payload}, _from, state)
+  def handle_call({:queue_delete, queue_name}, _from, state) when is_binary(queue_name) do
+    {count, queues} =
+      case state.queues do
+        %{^queue_name => list} -> {length(list), Map.delete(state.queues, queue_name)}
+        _ -> {0, state.queues}
+      end
+
+    {:reply, count, %{state | queues: queues}}
+  end
+
+  def handle_call({:queue_bind, queue_name, exchange, routing_key}, _from, state)
+      when is_binary(queue_name) and is_binary(exchange) and is_binary(routing_key) do
+    # Ensure the queue exists and remember that this exchange/routing_key
+    # pair should route to the given queue (RabbitMQ-style binding).
+    queues = Map.put_new(state.queues, queue_name, [])
+    bindings = Map.put(state.bindings, {exchange, routing_key}, queue_name)
+    {:reply, :ok, %{state | queues: queues, bindings: bindings}}
+  end
+
+  def handle_call({:basic_publish, exchange, routing_key, payload, header_payload}, _from, state)
       when is_binary(payload) do
-    queue_name = queue_for_publish(exchange, routing_key)
-    queues = append_to_queue(state.queues, queue_name, payload)
+    queue_name = queue_for_publish(state, exchange, routing_key)
+
+    message = %{
+      body: payload,
+      exchange: exchange,
+      routing_key: routing_key,
+      header_payload: header_payload
+    }
+
+    queues = append_to_queue(state.queues, queue_name, message)
     {:reply, :ok, %{state | queues: queues}}
+  end
+
+  # Backwards-compatible clause (no header payload).
+  def handle_call({:basic_publish, exchange, routing_key, payload}, from, state)
+      when is_binary(payload) do
+    handle_call({:basic_publish, exchange, routing_key, payload, nil}, from, state)
   end
 
   def handle_call({:basic_get, queue_name}, _from, state) when is_binary(queue_name) do
@@ -226,12 +284,15 @@ defmodule FauxMQ.Server do
     :ok
   end
 
-  # Default exchange: route by queue name (routing_key is the queue name).
-  defp queue_for_publish(<<>>, routing_key), do: routing_key
-  defp queue_for_publish(_exchange, routing_key), do: routing_key
+  # Routing behaviour:
+  #   * if there is an explicit binding for {exchange, routing_key}, use its queue_name
+  #   * otherwise fall back to treating routing_key as the queue name
+  defp queue_for_publish(%__MODULE__{bindings: bindings}, exchange, routing_key) do
+    Map.get(bindings, {exchange, routing_key}, routing_key)
+  end
 
-  defp append_to_queue(queues, queue_name, payload) do
+  defp append_to_queue(queues, queue_name, message) do
     list = Map.get(queues, queue_name, [])
-    Map.put(queues, queue_name, list ++ [payload])
+    Map.put(queues, queue_name, list ++ [message])
   end
 end

@@ -82,6 +82,50 @@ defmodule FauxMQ.Protocol do
   def parse_queue_declare_args(_), do: :error
 
   @doc """
+  Parses queue.delete method args (reserved short, then shortstr queue-name, flags).
+  """
+  @spec parse_queue_delete_args(binary()) :: {:ok, binary()} | :error
+  def parse_queue_delete_args(
+        <<_reserved::16, len::8, queue_name::binary-size(len), _flags::8, _rest::binary>>
+      )
+      when len <= 255 do
+    {:ok, queue_name}
+  end
+
+  def parse_queue_delete_args(_), do: :error
+
+  @doc """
+  Parses exchange.declare method args to extract the exchange name.
+  We only care about the exchange shortstr and ignore flags/arguments.
+  """
+  @spec parse_exchange_declare_args(binary()) :: {:ok, binary()} | :error
+  def parse_exchange_declare_args(
+        <<_reserved::16, elen::8, exchange::binary-size(elen), _rest::binary>>
+      )
+      when elen <= 255 do
+    {:ok, exchange}
+  end
+
+  def parse_exchange_declare_args(_), do: :error
+
+  @doc """
+  Parses queue.bind method args:
+  reserved-1 (short), queue-name (shortstr), exchange (shortstr), routing-key (shortstr),
+  then flags and arguments (ignored).
+  """
+  @spec parse_queue_bind_args(binary()) ::
+          {:ok, queue_name :: binary(), exchange :: binary(), routing_key :: binary()} | :error
+  def parse_queue_bind_args(
+        <<_reserved::16, qlen::8, queue::binary-size(qlen), elen::8,
+          exchange::binary-size(elen), rlen::8, routing_key::binary-size(rlen), _rest::binary>>
+      )
+      when qlen <= 255 and elen <= 255 and rlen <= 255 do
+    {:ok, queue, exchange, routing_key}
+  end
+
+  def parse_queue_bind_args(_), do: :error
+
+  @doc """
   Parses basic.publish method args: reserved (short), exchange (shortstr), routing_key (shortstr), mandatory (bit), immediate (bit).
   """
   @spec parse_basic_publish_args(binary()) :: {:ok, binary(), binary()} | :error
@@ -108,6 +152,23 @@ defmodule FauxMQ.Protocol do
   end
 
   def parse_basic_get_args(_), do: :error
+
+  @doc """
+  Parses basic.consume method args:
+  reserved (short), queue-name (shortstr), consumer-tag (shortstr), flags (bits), arguments (table).
+
+  For FauxMQ we only care about the queue name and consumer tag.
+  """
+  @spec parse_basic_consume_args(binary()) :: {:ok, binary(), binary()} | :error
+  def parse_basic_consume_args(
+        <<_reserved::16, qlen::8, queue::binary-size(qlen), tlen::8,
+          consumer_tag::binary-size(tlen), _flags::8, _rest::binary>>
+      )
+      when qlen <= 255 and tlen <= 255 do
+    {:ok, queue, consumer_tag}
+  end
+
+  def parse_basic_consume_args(_), do: :error
 
   @doc """
   Parses content header (class 60 basic) to obtain body size.
@@ -193,6 +254,21 @@ defmodule FauxMQ.Protocol do
     build_method_frame(channel, 50, 31, args)
   end
 
+  @doc """
+  Builds queue.delete-ok method frame.
+  """
+  @spec build_queue_delete_ok(non_neg_integer(), non_neg_integer()) :: Frame.t()
+  def build_queue_delete_ok(channel, message_count \\ 0) do
+    args = <<message_count::32>>
+    build_method_frame(channel, 50, 41, args)
+  end
+
+  @spec build_queue_bind_ok(non_neg_integer()) :: Frame.t()
+  def build_queue_bind_ok(channel) do
+    # queue.bind-ok has no payload fields
+    build_method_frame(channel, 50, 21, <<>>)
+  end
+
   @spec build_channel_close(
           non_neg_integer(),
           non_neg_integer(),
@@ -224,7 +300,8 @@ defmodule FauxMQ.Protocol do
           exchange :: binary(),
           routing_key :: binary(),
           message_count :: non_neg_integer(),
-          payload :: binary()
+          payload :: binary(),
+          header_payload :: binary() | nil
         ) :: [Frame.t()]
   def build_basic_get_ok_frames(
         channel,
@@ -233,7 +310,8 @@ defmodule FauxMQ.Protocol do
         exchange,
         routing_key,
         message_count,
-        payload
+        payload,
+        header_payload \\ nil
       ) do
     redelivered_octet = if redelivered, do: 1, else: 0
 
@@ -244,7 +322,21 @@ defmodule FauxMQ.Protocol do
         <<message_count::32>>
 
     method_frame = build_method_frame(channel, 60, 71, method_args)
-    [method_frame | build_content_frames(channel, payload)]
+
+    {header_frame, body_frame} =
+      case header_payload do
+        nil ->
+          # Fallback: minimal header with no properties.
+          [h, b] = build_content_frames(channel, payload)
+          {h, b}
+
+        hp when is_binary(hp) ->
+          header_frame = %Frame{type: :header, channel: channel, payload: hp}
+          body_frame = %Frame{type: :body, channel: channel, payload: payload}
+          {header_frame, body_frame}
+      end
+
+    [method_frame, header_frame, body_frame]
   end
 
   @doc """
@@ -254,6 +346,33 @@ defmodule FauxMQ.Protocol do
   def build_basic_get_empty(channel) do
     args = encode_shortstr("")
     build_method_frame(channel, 60, 72, args)
+  end
+
+  @doc """
+  Builds basic.consume-ok frame with a consumer tag.
+  """
+  @spec build_basic_consume_ok(non_neg_integer(), binary()) :: Frame.t()
+  def build_basic_consume_ok(channel, consumer_tag) do
+    args = encode_shortstr(consumer_tag)
+    build_method_frame(channel, 60, 21, args)
+  end
+
+  @doc """
+  Builds exchange.declare-ok frame.
+  """
+  @spec build_exchange_declare_ok(non_neg_integer()) :: Frame.t()
+  def build_exchange_declare_ok(channel) do
+    # exchange.declare-ok has no payload fields
+    build_method_frame(channel, 40, 11, <<>>)
+  end
+
+  @doc """
+  Builds exchange.delete-ok frame.
+  """
+  @spec build_exchange_delete_ok(non_neg_integer()) :: Frame.t()
+  def build_exchange_delete_ok(channel) do
+    # exchange.delete-ok has no payload fields
+    build_method_frame(channel, 40, 21, <<>>)
   end
 
   @doc """
@@ -328,11 +447,19 @@ defmodule FauxMQ.Protocol do
   def method_name(20, 11), do: :channel_open_ok
   def method_name(20, 40), do: :channel_close
   def method_name(20, 41), do: :channel_close_ok
+  def method_name(40, 10), do: :exchange_declare
+  def method_name(40, 11), do: :exchange_declare_ok
+  def method_name(40, 20), do: :exchange_delete
+  def method_name(40, 21), do: :exchange_delete_ok
   def method_name(50, 10), do: :queue_declare
   def method_name(50, 11), do: :queue_declare_ok
   def method_name(50, 30), do: :queue_purge
   def method_name(50, 31), do: :queue_purge_ok
+  def method_name(50, 40), do: :queue_delete
+  def method_name(50, 41), do: :queue_delete_ok
   def method_name(60, 40), do: :basic_publish
+  def method_name(60, 20), do: :basic_consume
+  def method_name(60, 21), do: :basic_consume_ok
   def method_name(60, 60), do: :basic_deliver
   def method_name(60, 70), do: :basic_get
   def method_name(60, 71), do: :basic_get_ok
