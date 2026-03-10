@@ -171,6 +171,20 @@ defmodule FauxMQ.Protocol do
   def parse_basic_consume_args(_), do: :error
 
   @doc """
+  Parses basic.cancel method args:
+  reserved (short), consumer-tag (shortstr), nowait (bit).
+  """
+  @spec parse_basic_cancel_args(binary()) :: {:ok, binary()} | :error
+  def parse_basic_cancel_args(
+        <<_reserved::16, tlen::8, consumer_tag::binary-size(tlen), _flags::8, _rest::binary>>
+      )
+      when tlen <= 255 do
+    {:ok, consumer_tag}
+  end
+
+  def parse_basic_cancel_args(_), do: :error
+
+  @doc """
   Parses content header (class 60 basic) to obtain body size.
   Format: class-id (16), weight (16), body-size (64), property-flags (16).
   """
@@ -241,10 +255,11 @@ defmodule FauxMQ.Protocol do
     build_method_frame(channel, 20, 11, args)
   end
 
-  @spec build_queue_declare_ok(non_neg_integer(), binary()) :: Frame.t()
-  def build_queue_declare_ok(channel, queue_name) do
+  @spec build_queue_declare_ok(non_neg_integer(), binary(), non_neg_integer(), non_neg_integer()) ::
+          Frame.t()
+  def build_queue_declare_ok(channel, queue_name, message_count, consumer_count) do
     # declare-ok: queue-name (shortstr), message-count (long), consumer-count (long)
-    args = encode_shortstr(queue_name) <> <<0::32, 0::32>>
+    args = encode_shortstr(queue_name) <> <<message_count::32, consumer_count::32>>
     build_method_frame(channel, 50, 11, args)
   end
 
@@ -261,6 +276,15 @@ defmodule FauxMQ.Protocol do
   def build_queue_delete_ok(channel, message_count \\ 0) do
     args = <<message_count::32>>
     build_method_frame(channel, 50, 41, args)
+  end
+
+  @doc """
+  Builds basic.qos-ok method frame.
+  """
+  @spec build_basic_qos_ok(non_neg_integer()) :: Frame.t()
+  def build_basic_qos_ok(channel) do
+    # basic.qos-ok has no payload fields
+    build_method_frame(channel, 60, 11, <<>>)
   end
 
   @spec build_queue_bind_ok(non_neg_integer()) :: Frame.t()
@@ -358,6 +382,15 @@ defmodule FauxMQ.Protocol do
   end
 
   @doc """
+  Builds basic.cancel-ok frame with a consumer tag.
+  """
+  @spec build_basic_cancel_ok(non_neg_integer(), binary()) :: Frame.t()
+  def build_basic_cancel_ok(channel, consumer_tag) do
+    args = encode_shortstr(consumer_tag)
+    build_method_frame(channel, 60, 31, args)
+  end
+
+  @doc """
   Builds exchange.declare-ok frame.
   """
   @spec build_exchange_declare_ok(non_neg_integer()) :: Frame.t()
@@ -414,8 +447,7 @@ defmodule FauxMQ.Protocol do
       encode_shortstr(consumer_tag) <>
         <<delivery_tag::64, redelivered_flag::8>> <>
         encode_shortstr(exchange) <>
-        encode_shortstr(routing_key) <>
-        <<0::8>>
+        encode_shortstr(routing_key)
 
     method_frame = build_method_frame(channel, 60, 60, method_args)
 
@@ -457,6 +489,9 @@ defmodule FauxMQ.Protocol do
   def method_name(50, 31), do: :queue_purge_ok
   def method_name(50, 40), do: :queue_delete
   def method_name(50, 41), do: :queue_delete_ok
+  def method_name(60, 10), do: :basic_qos
+  def method_name(60, 30), do: :basic_cancel
+  def method_name(60, 31), do: :basic_cancel_ok
   def method_name(60, 40), do: :basic_publish
   def method_name(60, 20), do: :basic_consume
   def method_name(60, 21), do: :basic_consume_ok

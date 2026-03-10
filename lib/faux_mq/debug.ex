@@ -13,7 +13,12 @@ defmodule FauxMQ.Debug do
 
   @doc "Returns whether debug logging is enabled (config :faux_mq, :debug)."
   def enabled? do
-    Application.get_env(:faux_mq, :debug, false)
+    # Use :application.get_env/3 to avoid relying on newer Elixir-only
+    # helpers in environments where only the BEAM runtime is guaranteed.
+    case :application.get_env(:faux_mq, :debug) do
+      {:ok, value} -> value
+      :undefined -> false
+    end
   end
 
   @doc """

@@ -67,6 +67,13 @@ defmodule FauxMQ.Connection do
     # Do not set active: :once here; Server must call controlling_process first, then send
     # :socket_ready so we don't lose the first packet (AMQP header).
 
+    # Heartbeat interval is optional; default to 0 when not configured.
+    heartbeat_interval =
+      case :application.get_env(:faux_mq, :heartbeat_interval) do
+        {:ok, value} when is_integer(value) -> value
+        _ -> 0
+      end
+
     state = %__MODULE__{
       socket: socket,
       server: server,
@@ -76,7 +83,7 @@ defmodule FauxMQ.Connection do
       buffer: <<>>,
       phase: :handshake,
       channels: %{},
-      heartbeat_interval: Application.get_env(:faux_mq, :heartbeat_interval, 0),
+      heartbeat_interval: heartbeat_interval,
       heartbeat_timer_ref: nil,
       pending_content: %{}
     }
@@ -583,8 +590,8 @@ defmodule FauxMQ.Connection do
       %{class_id: 50, method_id: 10, channel_id: channel, args: args} ->
         case state.protocol_module.parse_queue_declare_args(args) do
           {:ok, queue_name} ->
-            _ = safe_server_call(state.server, {:queue_ensure, queue_name}, :ok)
-            declare_ok = state.protocol_module.build_queue_declare_ok(channel, queue_name)
+            count = safe_server_call(state.server, {:queue_ensure, queue_name}, 0)
+            declare_ok = state.protocol_module.build_queue_declare_ok(channel, queue_name, count, 0)
             send_frame(state, declare_ok)
             state
 
@@ -727,14 +734,43 @@ defmodule FauxMQ.Connection do
             state
         end
 
+      %{class_id: 60, method_id: 10, channel_id: channel} ->
+        # basic.qos – FauxMQ treats QoS settings as a no-op but must respond
+        # with basic.qos-ok so AMQP clients (e.g. amqp library) do not hang
+        # waiting for a reply.
+        qos_ok = state.protocol_module.build_basic_qos_ok(channel)
+        send_frame(state, qos_ok)
+        state
+
       %{class_id: 60, method_id: 20, channel_id: channel, args: args} ->
         # basic.consume – ensure queue exists and acknowledge with basic.consume-ok.
         case state.protocol_module.parse_basic_consume_args(args) do
           {:ok, queue_name, consumer_tag} ->
             _ = safe_server_call(state.server, {:queue_ensure, queue_name}, :ok)
             tag = if consumer_tag == "", do: "ctag-#{channel}", else: consumer_tag
+
+            _ =
+              safe_server_call(
+                state.server,
+                {:register_consumer, queue_name, call_ctx.connection_id, channel, tag},
+                :ok
+              )
+
             consume_ok = state.protocol_module.build_basic_consume_ok(channel, tag)
             send_frame(state, consume_ok)
+            state
+
+          :error ->
+            state
+        end
+
+      %{class_id: 60, method_id: 30, channel_id: channel, args: args} ->
+        # basic.cancel – acknowledge immediately with basic.cancel-ok; FauxMQ does not
+        # track consumer state beyond registration, so this is effectively a no-op.
+        case state.protocol_module.parse_basic_cancel_args(args) do
+          {:ok, consumer_tag} ->
+            cancel_ok = state.protocol_module.build_basic_cancel_ok(channel, consumer_tag)
+            send_frame(state, cancel_ok)
             state
 
           :error ->
