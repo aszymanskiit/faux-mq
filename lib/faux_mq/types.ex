@@ -62,15 +62,26 @@ defmodule FauxMQ.Types do
   @typedoc """
   Specification of a pushed delivery.
   """
-  @type push_delivery_spec :: %{
-          channel_id: non_neg_integer(),
-          consumer_tag: binary(),
-          exchange: binary(),
-          routing_key: binary(),
-          payload: binary(),
-          delivery_tag: non_neg_integer(),
-          redelivered: boolean()
-        }
+  @type push_delivery_spec ::
+          %{
+            channel_id: non_neg_integer(),
+            consumer_tag: binary(),
+            exchange: binary(),
+            routing_key: binary(),
+            payload: binary(),
+            delivery_tag: non_neg_integer(),
+            redelivered: boolean()
+          }
+          | %{
+              channel_id: non_neg_integer(),
+              consumer_tag: binary(),
+              exchange: binary(),
+              routing_key: binary(),
+              payload: binary(),
+              delivery_tag: non_neg_integer(),
+              redelivered: boolean(),
+              header_payload: binary() | nil
+            }
 
   @typedoc """
   Specification of a pushed frame from test code.

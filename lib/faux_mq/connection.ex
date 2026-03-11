@@ -164,6 +164,8 @@ defmodule FauxMQ.Connection do
       redelivered: redelivered
     } = delivery
 
+    header_payload = Map.get(delivery, :header_payload)
+
     frames =
       state.protocol_module.build_basic_deliver_frames(
         channel,
@@ -172,7 +174,8 @@ defmodule FauxMQ.Connection do
         redelivered,
         exchange,
         routing_key,
-        payload
+        payload,
+        header_payload
       )
 
     Enum.each(frames, &send_frame(state, &1))

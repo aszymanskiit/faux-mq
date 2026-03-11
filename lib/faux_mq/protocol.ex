@@ -430,7 +430,8 @@ defmodule FauxMQ.Protocol do
           boolean(),
           binary(),
           binary(),
-          binary()
+          binary(),
+          binary() | nil
         ) :: [Frame.t()]
   def build_basic_deliver_frames(
         channel,
@@ -439,7 +440,8 @@ defmodule FauxMQ.Protocol do
         redelivered,
         exchange,
         routing_key,
-        payload
+        payload,
+        header_payload \\ nil
       ) do
     redelivered_flag = if redelivered, do: 1, else: 0
 
@@ -451,12 +453,18 @@ defmodule FauxMQ.Protocol do
 
     method_frame = build_method_frame(channel, 60, 60, method_args)
 
-    body_size = byte_size(payload)
-    # class-id 60 (basic), weight 0, body-size
-    header_payload = <<60::16, 0::16, body_size::64, 0::16>>
-    header_frame = %Frame{type: :header, channel: channel, payload: header_payload}
+    {header_frame, body_frame} =
+      case header_payload do
+        nil ->
+          # Minimal header with no properties when header payload is not provided.
+          [h, b] = build_content_frames(channel, payload)
+          {h, b}
 
-    body_frame = %Frame{type: :body, channel: channel, payload: payload}
+        hp when is_binary(hp) ->
+          header_frame = %Frame{type: :header, channel: channel, payload: hp}
+          body_frame = %Frame{type: :body, channel: channel, payload: payload}
+          {header_frame, body_frame}
+      end
 
     [method_frame, header_frame, body_frame]
   end

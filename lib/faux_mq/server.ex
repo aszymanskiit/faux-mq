@@ -389,7 +389,8 @@ defmodule FauxMQ.Server do
               routing_key: message.routing_key,
               payload: message.body,
               delivery_tag: consumer.delivery_tag,
-              redelivered: false
+              redelivered: false,
+              header_payload: Map.get(message, :header_payload)
             }
 
             send(pid, {:push_delivery, delivery})
