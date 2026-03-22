@@ -136,13 +136,24 @@ defmodule FauxMQ do
   end
 
   @doc """
-  Resets all mock rules and state for the given server.
+  Resets mock rules and call history on the embedded `MockServer` only.
 
-  This does not close existing TCP connections but clears broker state and
-  mock definitions. Intended to be called between tests.
+  In-memory AMQP queues/bindings/consumers on `FauxMQ.Server` are **not** cleared;
+  use `reset_test_broker_state/1` between tests when published messages must not linger.
   """
   @spec reset!(server()) :: :ok
   def reset!(server) do
     MockServer.reset!(server)
+  end
+
+  @doc """
+  Clears mock rules/history **and** in-memory queues, bindings, and consumers.
+
+  TCP connections stay open. Prefer this between ExUnit cases so long `mix test`
+  runs do not need a Docker/BEAM restart to match a clean broker.
+  """
+  @spec reset_test_broker_state(server()) :: :ok
+  def reset_test_broker_state(server) do
+    Server.reset_test_broker_state(server)
   end
 end

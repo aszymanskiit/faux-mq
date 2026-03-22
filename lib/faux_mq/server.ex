@@ -76,6 +76,11 @@ defmodule FauxMQ.Server do
     GenServer.call(server, :host)
   end
 
+  @spec reset_test_broker_state(pid()) :: :ok
+  def reset_test_broker_state(server) do
+    GenServer.call(server, :reset_test_broker_state)
+  end
+
   @impl true
   def init(opts) do
     # Use Application.get_env/3 instead of fetch_env!/2 to avoid relying on
@@ -144,6 +149,7 @@ defmodule FauxMQ.Server do
   @impl true
   @doc """
   Handles: `:port`, `:host`, `{:stub, ...}`, `{:expect, ...}`, `:calls`, `:reset`,
+  `:reset_test_broker_state`,
   `{:queue_ensure, name}`, `{:queue_purge, name}`, `{:queue_delete, name}`,
   `{:queue_bind, queue, exchange, routing_key}`,
   `{:register_consumer, queue, connection_id, channel_id, consumer_tag}`,
@@ -175,6 +181,14 @@ defmodule FauxMQ.Server do
   def handle_call(:reset, _from, state) do
     reply = GenServer.call(state.mock_server, :reset)
     {:reply, reply, state}
+  end
+
+  # Clears mock rules/history and all in-memory queues/bindings/consumers (not TCP connections).
+  def handle_call(:reset_test_broker_state, _from, state) do
+    _ = GenServer.call(state.mock_server, :reset)
+
+    {:reply, :ok,
+     %{state | queues: %{}, bindings: %{}, consumers: %{}}}
   end
 
   def handle_call({:queue_ensure, queue_name}, _from, state) when is_binary(queue_name) do
@@ -216,11 +230,13 @@ defmodule FauxMQ.Server do
       when is_binary(payload) do
     queue_name = queue_for_publish(state, exchange, routing_key)
 
+    fixed_header_payload = ensure_message_id_header(header_payload, payload)
+
     message = %{
       body: payload,
       exchange: exchange,
       routing_key: routing_key,
-      header_payload: header_payload
+      header_payload: fixed_header_payload
     }
 
     queues = append_to_queue(state.queues, queue_name, message)
@@ -365,6 +381,31 @@ defmodule FauxMQ.Server do
     Map.put(queues, queue_name, list ++ [message])
   end
 
+  defp ensure_message_id_header(nil, payload) when is_binary(payload) do
+    body_size = byte_size(payload)
+    message_id = generate_message_id()
+
+    headers_bin = Protocol.encode_table(%{"message-id" => message_id})
+
+    # Property flags: only "headers" present for basic content.
+    # In AMQP 0-9-1 this is bit 13 (0x2000) for the headers field.
+    property_flags = 0x2000
+
+    <<60::16, 0::16, body_size::64, property_flags::16, headers_bin::binary>>
+  end
+
+  defp ensure_message_id_header(existing, _payload) when is_binary(existing), do: existing
+
+  # Generates a UUID string using the same Erlang :uuid library that the
+  # main application uses (via RstCommon.Uuid), instead of rolling our own.
+  defp generate_message_id do
+    {id, _} = self() |> :uuid.new() |> :uuid.get_v1()
+
+    id
+    |> :uuid.uuid_to_string()
+    |> :erlang.list_to_binary()
+  end
+
   defp maybe_deliver_to_consumers(
          %__MODULE__{consumers: consumers, connections: connections} = state,
          queue_name,
@@ -377,8 +418,10 @@ defmodule FauxMQ.Server do
       [] ->
         state
 
-      consumer_list when is_list(consumer_list) ->
-        Enum.each(consumer_list, fn consumer ->
+      [consumer | rest] ->
+        new_consumers = Map.put(consumers, queue_name, rest ++ [consumer])
+
+        state =
           with %{connection_id: conn_id, channel_id: channel_id, consumer_tag: consumer_tag} <-
                  consumer,
                pid when is_pid(pid) <- Map.get(connections, conn_id) do
@@ -394,10 +437,12 @@ defmodule FauxMQ.Server do
             }
 
             send(pid, {:push_delivery, delivery})
+
+            %{state | consumers: new_consumers}
           else
-            _ -> :ok
+            _ ->
+              %{state | consumers: new_consumers}
           end
-        end)
 
         state
     end
