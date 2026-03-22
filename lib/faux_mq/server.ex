@@ -153,6 +153,7 @@ defmodule FauxMQ.Server do
   `{:queue_ensure, name}`, `{:queue_purge, name}`, `{:queue_delete, name}`,
   `{:queue_bind, queue, exchange, routing_key}`,
   `{:register_consumer, queue, connection_id, channel_id, consumer_tag}`,
+  `{:unregister_consumer, consumer_tag, connection_id, channel_id}`,
   `{:basic_publish, exchange, routing_key, payload}`, `{:basic_get, queue_name}`.
   """
   def handle_call(:port, _from, state) do
@@ -260,6 +261,26 @@ defmodule FauxMQ.Server do
       _ ->
         {:reply, :empty, state}
     end
+  end
+
+  def handle_call(
+        {:unregister_consumer, consumer_tag, connection_id, channel_id},
+        _from,
+        state
+      )
+      when is_binary(consumer_tag) and is_integer(connection_id) and is_integer(channel_id) do
+    new_consumers =
+      Map.new(state.consumers, fn {queue_name, list} ->
+        filtered =
+          Enum.reject(list, fn c ->
+            c.consumer_tag == consumer_tag and c.connection_id == connection_id and
+              c.channel_id == channel_id
+          end)
+
+        {queue_name, filtered}
+      end)
+
+    {:reply, :ok, %{state | consumers: new_consumers}}
   end
 
   def handle_call(

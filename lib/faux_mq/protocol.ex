@@ -171,13 +171,13 @@ defmodule FauxMQ.Protocol do
   def parse_basic_consume_args(_), do: :error
 
   @doc """
-  Parses basic.cancel method args:
-  reserved (short), consumer-tag (shortstr), nowait (bit).
+  Parses basic.cancel method args per AMQP 0-9-1:
+  consumer-tag (shortstr), nowait (bit) — **brak** pola ticket/reserved przed tagiem.
+
+  Trailing octets (bit + ewentualne wypełnienie) są ignorowane.
   """
   @spec parse_basic_cancel_args(binary()) :: {:ok, binary()} | :error
-  def parse_basic_cancel_args(
-        <<_reserved::16, tlen::8, consumer_tag::binary-size(tlen), _flags::8, _rest::binary>>
-      )
+  def parse_basic_cancel_args(<<tlen::8, consumer_tag::binary-size(tlen), _rest::binary>>)
       when tlen <= 255 do
     {:ok, consumer_tag}
   end

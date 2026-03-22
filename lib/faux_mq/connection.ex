@@ -767,11 +767,17 @@ defmodule FauxMQ.Connection do
             state
         end
 
-      %{class_id: 60, method_id: 30, channel_id: channel, args: args} ->
-        # basic.cancel – acknowledge immediately with basic.cancel-ok; FauxMQ does not
-        # track consumer state beyond registration, so this is effectively a no-op.
+      %{class_id: 60, method_id: 30, channel_id: channel, args: args, connection_id: conn_id} ->
+        # basic.cancel
         case state.protocol_module.parse_basic_cancel_args(args) do
           {:ok, consumer_tag} ->
+            _ =
+              safe_server_call(
+                state.server,
+                {:unregister_consumer, consumer_tag, conn_id, channel},
+                :ok
+              )
+
             cancel_ok = state.protocol_module.build_basic_cancel_ok(channel, consumer_tag)
             send_frame(state, cancel_ok)
             state

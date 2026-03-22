@@ -27,6 +27,13 @@ defmodule FauxMQ.ProtocolTest do
     assert d2.payload == "hello"
   end
 
+  test "parse_basic_cancel_args: AMQP wire format is shortstr + nowait bit (no reserved short)" do
+    tag = "amq.ctag-abc123"
+    # nowait=false → jeden oktet po tagu (typowy układ z klienta amqp)
+    args = <<byte_size(tag)::8, tag::binary, 0::8>>
+    assert {:ok, ^tag} = Protocol.parse_basic_cancel_args(args)
+  end
+
   test "returns incomplete when not enough bytes" do
     frame = %Frame{type: :body, channel: 1, payload: "hello"}
     bin = Protocol.encode_frame(frame)
