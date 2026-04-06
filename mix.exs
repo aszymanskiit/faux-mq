@@ -1,10 +1,12 @@
 defmodule FauxMQ.MixProject do
   use Mix.Project
 
+  @version "1.0.0"
+
   def project do
     [
       app: :faux_mq,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -33,7 +35,7 @@ defmodule FauxMQ.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
-      {:uuid, "~> 2.0", [env: :prod, hex: "uuid_erl", override: true, repo: "hexpm"]}
+      {:uuid, "~> 2.0", hex: :uuid_erl}
     ]
   end
 
@@ -41,8 +43,10 @@ defmodule FauxMQ.MixProject do
     [
       licenses: ["MIT"],
       links: %{
-        "GitHub" => "https://github.com/aszymanskiit/faux-mq"
-      }
+        "GitHub" => "https://github.com/aszymanskiit/faux-mq",
+        "Hex" => "https://hex.pm/packages/faux_mq"
+      },
+      files: ~w(lib config mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 
@@ -51,7 +55,7 @@ defmodule FauxMQ.MixProject do
       main: "readme",
       extras: ["README.md"],
       source_url: "https://github.com/aszymanskiit/faux-mq",
-      source_ref: "main"
+      source_ref: "v#{@version}"
     ]
   end
 

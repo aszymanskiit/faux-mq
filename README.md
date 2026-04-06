@@ -1,5 +1,7 @@
 # FauxMQ
 
+[![CI](https://github.com/aszymanskiit/faux-mq/actions/workflows/ci.yml/badge.svg)](https://github.com/aszymanskiit/faux-mq/actions/workflows/ci.yml)
+
 FauxMQ is a **dummy AMQP 0-9-1 broker** implemented in Elixir/OTP.
 
 It behaves like a real TCP AMQP endpoint from the client's perspective, while
@@ -29,7 +31,7 @@ Add FauxMQ to your `mix.exs` (requires Elixir ~> 1.13):
 ```elixir
 def deps do
   [
-    {:faux_mq, "~> 0.1"}
+    {:faux_mq, "~> 1.0"}
   ]
 end
 ```
@@ -293,8 +295,6 @@ GitHub Actions workflows include:
 
 - **CI** (`.github/workflows/ci.yml`): `mix format --check-formatted`, `mix credo --strict`, `mix test` on several OTP versions.
 - **Dialyzer** (`.github/workflows/dialyzer.yml`): `mix dialyzer` (separate job with PLT caching).
-
-Other workflows handle docs, Hex audit, and release tags.
 
 ## Limitations
 

@@ -210,7 +210,7 @@ defmodule FauxMQ.Protocol do
   """
   @spec send_connection_start(port()) :: :ok | {:error, term()}
   def send_connection_start(socket) do
-    server_properties = encode_table(%{"product" => "FauxMQ", "version" => "0.1.0"})
+    server_properties = encode_table(%{"product" => "FauxMQ", "version" => "1.0.0"})
     mechanisms = encode_longstr("PLAIN")
     locales = encode_longstr("en_US")
 

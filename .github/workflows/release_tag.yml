@@ -30,7 +30,7 @@ jobs:
       - name: Extract version from mix.exs
         id: version
         run: |
-          VERSION=$(grep '@version' mix.exs | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION=$(mix run --no-start -e 'IO.puts(Mix.Project.config()[:version])')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
