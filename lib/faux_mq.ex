@@ -10,7 +10,7 @@ defmodule FauxMQ do
 
     * start a FauxMQ server on a random port
     * inject its `endpoint/1` into your system-under-test configuration
-    * define expectations and stubs using `stub/3` and `expect/3`
+    * define expectations and stubs using `stub/3` and `expect/4`
     * run assertions against collected call history via `calls/1`
 
   This module exposes the main public API. All functions are dialyzer-friendly
@@ -26,10 +26,8 @@ defmodule FauxMQ do
 
   Options:
 
-    * `:host` - IP tuple (default: application `:default_host`)  
-    * `:port` - TCP port or `0` for random free port (default: application `:default_port`)  
-    * `:name` - optional atom name to register the server in `Registry`  
-    * `:mode` - `:stateful` or `:scripted` (default: `:mixed`, i.e. mocks first, then stateful)
+    * `:host` - IP tuple (default: application `:default_host`)
+    * `:port` - TCP port; `0` means use application `:default_port` (see `FauxMQ.Server` / README for binding behaviour)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do

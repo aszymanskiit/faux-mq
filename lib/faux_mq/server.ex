@@ -44,15 +44,14 @@ defmodule FauxMQ.Server do
           queues: %{binary() => [stored_message()]},
           bindings: %{optional({binary(), binary()}) => binary()},
           consumers: %{
-            optional(binary()) =>
-              [
-                %{
-                  connection_id: non_neg_integer(),
-                  channel_id: non_neg_integer(),
-                  consumer_tag: binary(),
-                  delivery_tag: non_neg_integer()
-                }
-              ]
+            optional(binary()) => [
+              %{
+                connection_id: non_neg_integer(),
+                channel_id: non_neg_integer(),
+                consumer_tag: binary(),
+                delivery_tag: non_neg_integer()
+              }
+            ]
           }
         }
 
@@ -188,8 +187,7 @@ defmodule FauxMQ.Server do
   def handle_call(:reset_test_broker_state, _from, state) do
     _ = GenServer.call(state.mock_server, :reset)
 
-    {:reply, :ok,
-     %{state | queues: %{}, bindings: %{}, consumers: %{}}}
+    {:reply, :ok, %{state | queues: %{}, bindings: %{}, consumers: %{}}}
   end
 
   def handle_call({:queue_ensure, queue_name}, _from, state) when is_binary(queue_name) do

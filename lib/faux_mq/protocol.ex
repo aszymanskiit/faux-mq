@@ -116,8 +116,8 @@ defmodule FauxMQ.Protocol do
   @spec parse_queue_bind_args(binary()) ::
           {:ok, queue_name :: binary(), exchange :: binary(), routing_key :: binary()} | :error
   def parse_queue_bind_args(
-        <<_reserved::16, qlen::8, queue::binary-size(qlen), elen::8,
-          exchange::binary-size(elen), rlen::8, routing_key::binary-size(rlen), _rest::binary>>
+        <<_reserved::16, qlen::8, queue::binary-size(qlen), elen::8, exchange::binary-size(elen),
+          rlen::8, routing_key::binary-size(rlen), _rest::binary>>
       )
       when qlen <= 255 and elen <= 255 and rlen <= 255 do
     {:ok, queue, exchange, routing_key}
@@ -214,8 +214,7 @@ defmodule FauxMQ.Protocol do
     mechanisms = encode_longstr("PLAIN")
     locales = encode_longstr("en_US")
 
-    args =
-      <<0::8, 9::8, server_properties::binary, mechanisms::binary, locales::binary>>
+    args = <<0::8, 9::8, server_properties::binary, mechanisms::binary, locales::binary>>
 
     frame = build_method_frame(0, 10, 10, args)
     :gen_tcp.send(socket, encode_frame(frame))
@@ -238,8 +237,7 @@ defmodule FauxMQ.Protocol do
   @spec build_connection_close(non_neg_integer(), binary(), non_neg_integer(), non_neg_integer()) ::
           Frame.t()
   def build_connection_close(reply_code, reply_text, class_id, method_id) do
-    args =
-      <<reply_code::16, encode_shortstr(reply_text)::binary, class_id::16, method_id::16>>
+    args = <<reply_code::16, encode_shortstr(reply_text)::binary, class_id::16, method_id::16>>
 
     build_method_frame(0, 10, 50, args)
   end
@@ -302,8 +300,7 @@ defmodule FauxMQ.Protocol do
         ) ::
           Frame.t()
   def build_channel_close(channel, reply_code, reply_text, class_id, method_id) do
-    args =
-      <<reply_code::16, encode_shortstr(reply_text)::binary, class_id::16, method_id::16>>
+    args = <<reply_code::16, encode_shortstr(reply_text)::binary, class_id::16, method_id::16>>
 
     build_method_frame(channel, 20, 40, args)
   end

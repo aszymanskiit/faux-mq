@@ -560,242 +560,302 @@ defmodule FauxMQ.Connection do
     state
   end
 
+  # minimal handshake and channel lifecycle for compatibility — split for Credo CC
   defp execute_default(state, _frame, call_ctx) do
-    # minimal handshake and channel lifecycle for compatibility
-    case call_ctx do
-      %{class_id: 10, method_id: 11} ->
-        # connection.start-ok -> send connection.tune (channel_max=0 no limit, frame_max=128K, heartbeat=0)
-        tune = state.protocol_module.build_connection_tune(0, 0, 131_072, state.heartbeat_interval)
-        send_frame(state, tune)
+    default_handle(state, call_ctx)
+  end
+
+  defp default_handle(state, %{class_id: 10, method_id: 11}), do: default_conn_start_ok(state)
+  defp default_handle(state, %{class_id: 10, method_id: 31}), do: state
+  defp default_handle(state, %{class_id: 10, method_id: 40}), do: default_conn_open(state)
+
+  defp default_handle(state, %{class_id: 20, method_id: 10, channel_id: channel}),
+    do: default_channel_open(state, channel)
+
+  defp default_handle(state, %{class_id: 20, method_id: 40, channel_id: channel}),
+    do: default_channel_close_ok(state, channel)
+
+  defp default_handle(state, %{class_id: 50, method_id: 10, channel_id: channel, args: args}),
+    do: default_queue_declare(state, channel, args)
+
+  defp default_handle(state, %{class_id: 40, method_id: 10, channel_id: channel, args: args}),
+    do: default_exchange_declare(state, channel, args)
+
+  defp default_handle(state, %{class_id: 40, method_id: 20, channel_id: channel}),
+    do: default_exchange_delete(state, channel)
+
+  defp default_handle(state, %{class_id: 50, method_id: 30, channel_id: channel, args: args}),
+    do: default_queue_purge(state, channel, args)
+
+  defp default_handle(state, %{class_id: 50, method_id: 40, channel_id: channel, args: args}),
+    do: default_queue_delete(state, channel, args)
+
+  defp default_handle(state, %{class_id: 50, method_id: 20, channel_id: channel, args: args}),
+    do: default_queue_bind(state, channel, args)
+
+  defp default_handle(state, %{class_id: 60, method_id: 40, channel_id: channel, args: args}),
+    do: default_basic_publish_start(state, channel, args)
+
+  defp default_handle(state, %{class_id: 60, method_id: 70, channel_id: channel, args: args}),
+    do: default_basic_get(state, channel, args)
+
+  defp default_handle(state, %{class_id: 60, method_id: 10, channel_id: channel}),
+    do: default_basic_qos(state, channel)
+
+  defp default_handle(
+         state,
+         %{class_id: 60, method_id: 20, channel_id: channel, args: args} = ctx
+       ),
+       do: default_basic_consume(state, channel, args, ctx.connection_id)
+
+  defp default_handle(state, %{
+         class_id: 60,
+         method_id: 30,
+         channel_id: channel,
+         args: args,
+         connection_id: conn_id
+       }),
+       do: default_basic_cancel(state, channel, args, conn_id)
+
+  defp default_handle(state, %{class_id: 10, method_id: 50}),
+    do: default_connection_client_close(state)
+
+  defp default_handle(state, _), do: state
+
+  defp default_conn_start_ok(state) do
+    tune = state.protocol_module.build_connection_tune(0, 0, 131_072, state.heartbeat_interval)
+
+    send_frame(state, tune)
+    state
+  end
+
+  defp default_conn_open(state) do
+    open_ok = state.protocol_module.build_connection_open_ok("/")
+    send_frame(state, open_ok)
+    maybe_schedule_heartbeat(state)
+  end
+
+  defp default_channel_open(state, channel) do
+    open_ok = state.protocol_module.build_channel_open_ok(channel)
+    send_frame(state, open_ok)
+    state
+  end
+
+  defp default_channel_close_ok(state, channel) do
+    close_ok = state.protocol_module.build_channel_close_ok(channel)
+    send_frame(state, close_ok)
+    state
+  end
+
+  defp default_queue_declare(state, channel, args) do
+    case state.protocol_module.parse_queue_declare_args(args) do
+      {:ok, queue_name} ->
+        count = safe_server_call(state.server, {:queue_ensure, queue_name}, 0)
+
+        declare_ok = state.protocol_module.build_queue_declare_ok(channel, queue_name, count, 0)
+
+        send_frame(state, declare_ok)
         state
 
-      %{class_id: 10, method_id: 31} ->
-        # connection.tune-ok
+      :error ->
+        state
+    end
+  end
+
+  defp default_exchange_declare(state, channel, args) do
+    case state.protocol_module.parse_exchange_declare_args(args) do
+      {:ok, _exchange_name} ->
+        declare_ok = state.protocol_module.build_exchange_declare_ok(channel)
+        send_frame(state, declare_ok)
         state
 
-      %{class_id: 10, method_id: 40} ->
-        # connection.open -> open-ok
-        open_ok = state.protocol_module.build_connection_open_ok("/")
-        send_frame(state, open_ok)
-        maybe_schedule_heartbeat(state)
+      :error ->
+        state
+    end
+  end
 
-      %{class_id: 20, method_id: 10, channel_id: channel} ->
-        # channel.open -> open-ok
-        open_ok = state.protocol_module.build_channel_open_ok(channel)
-        send_frame(state, open_ok)
+  defp default_exchange_delete(state, channel) do
+    delete_ok = state.protocol_module.build_exchange_delete_ok(channel)
+    send_frame(state, delete_ok)
+    state
+  end
+
+  defp default_queue_purge(state, channel, args) do
+    case state.protocol_module.parse_queue_declare_args(args) do
+      {:ok, queue_name} ->
+        count = safe_server_call(state.server, {:queue_purge, queue_name}, 0)
+        purge_ok = state.protocol_module.build_queue_purge_ok(channel, count)
+        send_frame(state, purge_ok)
         state
 
-      %{class_id: 20, method_id: 40, channel_id: channel} ->
-        close_ok = state.protocol_module.build_channel_close_ok(channel)
-        send_frame(state, close_ok)
+      :error ->
         state
+    end
+  end
 
-      %{class_id: 50, method_id: 10, channel_id: channel, args: args} ->
-        case state.protocol_module.parse_queue_declare_args(args) do
-          {:ok, queue_name} ->
-            count = safe_server_call(state.server, {:queue_ensure, queue_name}, 0)
-            declare_ok = state.protocol_module.build_queue_declare_ok(channel, queue_name, count, 0)
-            send_frame(state, declare_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 40, method_id: 10, channel_id: channel, args: args} ->
-        # exchange.declare -> respond with exchange.declare-ok.
-        # FauxMQ does not need to persist exchanges; routing is driven by
-        # queue.bind bindings stored in the server.
-        case state.protocol_module.parse_exchange_declare_args(args) do
-          {:ok, _exchange_name} ->
-            declare_ok = state.protocol_module.build_exchange_declare_ok(channel)
-            send_frame(state, declare_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 40, method_id: 20, channel_id: channel} ->
-        # exchange.delete – FauxMQ does not persist exchanges, so this is a no-op.
-        # We still need to acknowledge with exchange.delete-ok so AMQP clients do not hang.
-        delete_ok = state.protocol_module.build_exchange_delete_ok(channel)
+  defp default_queue_delete(state, channel, args) do
+    case state.protocol_module.parse_queue_delete_args(args) do
+      {:ok, queue_name} ->
+        count = safe_server_call(state.server, {:queue_delete, queue_name}, 0)
+        delete_ok = state.protocol_module.build_queue_delete_ok(channel, count)
         send_frame(state, delete_ok)
         state
 
-      %{class_id: 50, method_id: 30, channel_id: channel, args: args} ->
-        case state.protocol_module.parse_queue_declare_args(args) do
-          {:ok, queue_name} ->
-            count = safe_server_call(state.server, {:queue_purge, queue_name}, 0)
-            purge_ok = state.protocol_module.build_queue_purge_ok(channel, count)
-            send_frame(state, purge_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 50, method_id: 40, channel_id: channel, args: args} ->
-        # queue.delete – remove the queue from FauxMQ.Server and reply delete-ok.
-        case state.protocol_module.parse_queue_delete_args(args) do
-          {:ok, queue_name} ->
-            count = safe_server_call(state.server, {:queue_delete, queue_name}, 0)
-            delete_ok = state.protocol_module.build_queue_delete_ok(channel, count)
-            send_frame(state, delete_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 50, method_id: 20, channel_id: channel, args: args} ->
-        # queue.bind: remember binding and reply with bind-ok so AMQP clients
-        # can route publishes via exchange/routing-key to the declared queue.
-        case state.protocol_module.parse_queue_bind_args(args) do
-          {:ok, queue_name, exchange, routing_key} ->
-            _ =
-              safe_server_call(
-                state.server,
-                {:queue_bind, queue_name, exchange, routing_key},
-                :ok
-              )
-
-            bind_ok = state.protocol_module.build_queue_bind_ok(channel)
-            send_frame(state, bind_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 60, method_id: 40, channel_id: channel, args: args} ->
-        case state.protocol_module.parse_basic_publish_args(args) do
-          {:ok, exchange, routing_key} ->
-            entry = %{
-              exchange: exchange,
-              routing_key: routing_key,
-              body_size: nil,
-              body_acc: <<>>
-            }
-
-            pending_content = Map.put(state.pending_content, channel, entry)
-            %{state | pending_content: pending_content}
-
-          :error ->
-            state
-        end
-
-      %{class_id: 60, method_id: 70, channel_id: channel, args: args} ->
-        case state.protocol_module.parse_basic_get_args(args) do
-          {:ok, queue_name, _no_ack} ->
-            case safe_server_call(state.server, {:basic_get, queue_name}, :empty) do
-              {:ok, message, message_count} when is_map(message) ->
-                %{body: body, exchange: exchange, routing_key: routing_key, header_payload: header_payload} =
-                  Map.merge(
-                    %{body: <<>>, exchange: "", routing_key: queue_name, header_payload: nil},
-                    message
-                  )
-
-                frames =
-                  state.protocol_module.build_basic_get_ok_frames(
-                    channel,
-                    1,
-                    false,
-                    exchange,
-                    routing_key,
-                    message_count,
-                    body,
-                    header_payload
-                  )
-
-                Enum.each(frames, &send_frame(state, &1))
-                state
-
-              {:ok, payload, message_count} ->
-                # Backwards compatibility: payload only, no metadata.
-                frames =
-                  state.protocol_module.build_basic_get_ok_frames(
-                    channel,
-                    1,
-                    false,
-                    "",
-                    queue_name,
-                    message_count,
-                    payload
-                  )
-
-                Enum.each(frames, &send_frame(state, &1))
-                state
-
-              :empty ->
-                get_empty = state.protocol_module.build_basic_get_empty(channel)
-                send_frame(state, get_empty)
-                state
-            end
-
-          :error ->
-            state
-        end
-
-      %{class_id: 60, method_id: 10, channel_id: channel} ->
-        # basic.qos – FauxMQ treats QoS settings as a no-op but must respond
-        # with basic.qos-ok so AMQP clients (e.g. amqp library) do not hang
-        # waiting for a reply.
-        qos_ok = state.protocol_module.build_basic_qos_ok(channel)
-        send_frame(state, qos_ok)
-        state
-
-      %{class_id: 60, method_id: 20, channel_id: channel, args: args} ->
-        # basic.consume – ensure queue exists and acknowledge with basic.consume-ok.
-        case state.protocol_module.parse_basic_consume_args(args) do
-          {:ok, queue_name, consumer_tag} ->
-            _ = safe_server_call(state.server, {:queue_ensure, queue_name}, :ok)
-            tag = if consumer_tag == "", do: "ctag-#{channel}", else: consumer_tag
-
-            _ =
-              safe_server_call(
-                state.server,
-                {:register_consumer, queue_name, call_ctx.connection_id, channel, tag},
-                :ok
-              )
-
-            consume_ok = state.protocol_module.build_basic_consume_ok(channel, tag)
-            send_frame(state, consume_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 60, method_id: 30, channel_id: channel, args: args, connection_id: conn_id} ->
-        # basic.cancel
-        case state.protocol_module.parse_basic_cancel_args(args) do
-          {:ok, consumer_tag} ->
-            _ =
-              safe_server_call(
-                state.server,
-                {:unregister_consumer, consumer_tag, conn_id, channel},
-                :ok
-              )
-
-            cancel_ok = state.protocol_module.build_basic_cancel_ok(channel, consumer_tag)
-            send_frame(state, cancel_ok)
-            state
-
-          :error ->
-            state
-        end
-
-      %{class_id: 10, method_id: 50} ->
-        # connection.close -> close-ok and close socket
-        close_ok = state.protocol_module.build_connection_close_ok()
-        send_frame(state, close_ok)
-        :gen_tcp.close(state.socket)
-        state
-
-      _ ->
+      :error ->
         state
     end
+  end
+
+  defp default_queue_bind(state, channel, args) do
+    case state.protocol_module.parse_queue_bind_args(args) do
+      {:ok, queue_name, exchange, routing_key} ->
+        _ =
+          safe_server_call(
+            state.server,
+            {:queue_bind, queue_name, exchange, routing_key},
+            :ok
+          )
+
+        bind_ok = state.protocol_module.build_queue_bind_ok(channel)
+        send_frame(state, bind_ok)
+        state
+
+      :error ->
+        state
+    end
+  end
+
+  defp default_basic_publish_start(state, channel, args) do
+    case state.protocol_module.parse_basic_publish_args(args) do
+      {:ok, exchange, routing_key} ->
+        entry = %{
+          exchange: exchange,
+          routing_key: routing_key,
+          body_size: nil,
+          body_acc: <<>>
+        }
+
+        pending_content = Map.put(state.pending_content, channel, entry)
+        %{state | pending_content: pending_content}
+
+      :error ->
+        state
+    end
+  end
+
+  defp default_basic_get(state, channel, args) do
+    case state.protocol_module.parse_basic_get_args(args) do
+      {:ok, queue_name, _no_ack} ->
+        default_basic_get_result(state, channel, queue_name)
+
+      :error ->
+        state
+    end
+  end
+
+  defp default_basic_get_result(state, channel, queue_name) do
+    case safe_server_call(state.server, {:basic_get, queue_name}, :empty) do
+      {:ok, message, message_count} when is_map(message) ->
+        %{
+          body: body,
+          exchange: exchange,
+          routing_key: routing_key,
+          header_payload: header_payload
+        } =
+          Map.merge(
+            %{body: <<>>, exchange: "", routing_key: queue_name, header_payload: nil},
+            message
+          )
+
+        frames =
+          state.protocol_module.build_basic_get_ok_frames(
+            channel,
+            1,
+            false,
+            exchange,
+            routing_key,
+            message_count,
+            body,
+            header_payload
+          )
+
+        Enum.each(frames, &send_frame(state, &1))
+        state
+
+      {:ok, payload, message_count} ->
+        frames =
+          state.protocol_module.build_basic_get_ok_frames(
+            channel,
+            1,
+            false,
+            "",
+            queue_name,
+            message_count,
+            payload
+          )
+
+        Enum.each(frames, &send_frame(state, &1))
+        state
+
+      :empty ->
+        get_empty = state.protocol_module.build_basic_get_empty(channel)
+        send_frame(state, get_empty)
+        state
+    end
+  end
+
+  defp default_basic_qos(state, channel) do
+    qos_ok = state.protocol_module.build_basic_qos_ok(channel)
+    send_frame(state, qos_ok)
+    state
+  end
+
+  defp default_basic_consume(state, channel, args, connection_id) do
+    case state.protocol_module.parse_basic_consume_args(args) do
+      {:ok, queue_name, consumer_tag} ->
+        _ = safe_server_call(state.server, {:queue_ensure, queue_name}, :ok)
+        tag = if consumer_tag == "", do: "ctag-#{channel}", else: consumer_tag
+
+        _ =
+          safe_server_call(
+            state.server,
+            {:register_consumer, queue_name, connection_id, channel, tag},
+            :ok
+          )
+
+        consume_ok = state.protocol_module.build_basic_consume_ok(channel, tag)
+        send_frame(state, consume_ok)
+        state
+
+      :error ->
+        state
+    end
+  end
+
+  defp default_basic_cancel(state, channel, args, conn_id) do
+    case state.protocol_module.parse_basic_cancel_args(args) do
+      {:ok, consumer_tag} ->
+        _ =
+          safe_server_call(
+            state.server,
+            {:unregister_consumer, consumer_tag, conn_id, channel},
+            :ok
+          )
+
+        cancel_ok = state.protocol_module.build_basic_cancel_ok(channel, consumer_tag)
+        send_frame(state, cancel_ok)
+        state
+
+      :error ->
+        state
+    end
+  end
+
+  defp default_connection_client_close(state) do
+    close_ok = state.protocol_module.build_connection_close_ok()
+    send_frame(state, close_ok)
+    :gen_tcp.close(state.socket)
+    state
   end
 
   defp send_frame(state, frame) do

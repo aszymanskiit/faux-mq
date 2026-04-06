@@ -7,8 +7,7 @@ defmodule FauxMQ.ServerHandshakeTest do
     {:ok, server} = FauxMQ.start_link(port: 0)
     port = FauxMQ.port(server)
 
-    {:ok, socket} =
-      :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :raw, active: false])
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :raw, active: false])
 
     :ok = :gen_tcp.send(socket, "AMQP" <> <<0, 0, 9, 1>>)
 

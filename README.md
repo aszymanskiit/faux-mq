@@ -12,12 +12,12 @@ systems that speak AMQP 0-9-1.
 
 ## Features
 
-- **Real TCP AMQP 0-9-1 server**
-- **Controllable mock/stub API** for per-method behaviour
-- **Call history** for assertions
-- **Stateful or scripted modes** (mixed by default: mocks first, then defaults)
-- **Per-server isolation**, many instances per test
-- Designed to be run from tests via `mix deps` dependency
+- **Real TCP AMQP 0-9-1 server** (listener, framing, handshake, channels)
+- **Controllable mock/stub API** (`stub/3`, `expect/4`) for per-method behaviour
+- **Call history** (`calls/1`) for assertions
+- **Rules override defaults**: if a stub/expect matches an incoming method, that action runs; otherwise the built-in handler answers (handshake, channel lifecycle, in-memory queues/bindings, `basic.publish` / `basic.get` / `basic.consume` flow)
+- **Per-server isolation**: each `FauxMQ.start_link/1` has its own listener, mock process, and broker state
+- Intended as a **`mix` dependency** in test (or dev) environments
 
 > Note: FauxMQ is **not a production broker**. It aims at protocol fidelity and
 > excellent test ergonomics, not performance or completeness of broker semantics.
@@ -39,6 +39,19 @@ Then fetch dependencies:
 ```bash
 mix deps.get
 ```
+
+The `:faux_mq` application starts a small supervision tree (including a `Registry` for internal use). **No TCP broker is listening until** you call `FauxMQ.start_link/1` (or add `FauxMQ.child_spec/1` to your own supervisor).
+
+## Starting the server (`start_link/1`)
+
+Relevant options:
+
+| Option | Meaning |
+|--------|--------|
+| `:host` | Bind address as an IP tuple (default: `config :faux_mq, :default_host`, usually `{127, 0, 0, 1}`). |
+| `:port` | **Not** the usual “`0` = OS ephemeral” shortcut by itself: `0` means “use `config :faux_mq, :default_port`”. The default config sets `default_port: 0`, which makes the OS choose a free port. If you set `default_port` to e.g. `5672`, then passing `port: 0` resolves to `5672`. Any other positive integer binds that port; if the port is already in use (`:eaddrinuse`), the server **falls back** to an ephemeral port. |
+
+You can still use `FauxMQ.port/1` / `FauxMQ.endpoint/1` after start to read the actual port.
 
 ## Basic usage in ExUnit
 
@@ -74,7 +87,7 @@ Example: when a client uses `basic.publish`, close the connection:
 FauxMQ.stub(server, %{class_id: 60, method_id: 40}, :close_connection)
 ```
 
-You can also match on `:method_name`:
+You can also match on `:method_name`, and optionally narrow by `:connection_id`, `:channel_id`, or a custom `{:predicate, fn ctx -> ... end}` (see types in `FauxMQ.Types`):
 
 ```elixir
 FauxMQ.stub(server, %{method_name: :basic_publish}, :close_connection)
@@ -157,8 +170,24 @@ delivery = %{
 FauxMQ.push_delivery(server, delivery)
 ```
 
+The map may also include optional `header_payload` for content header bytes (see `push_delivery_spec` in `FauxMQ.Types`).
+
 From the client's perspective this is indistinguishable from a normal broker
 delivering a message after `basic.consume`.
+
+## Pushing arbitrary server frames
+
+For lower-level tests you can inject a raw frame (method/header/body/heartbeat) with `FauxMQ.push_frame/2`:
+
+```elixir
+FauxMQ.push_frame(server, %{
+  type: :method,
+  channel: 1,
+  payload: <<...>>
+})
+```
+
+See `push_frame_spec` / `frame_spec` in `FauxMQ.Types`.
 
 ## Using FauxMQ as ejabberd AMQP endpoint
 
@@ -178,7 +207,12 @@ ejabberd_config =
 
 You can now run ejabberd's AMQP-based code against FauxMQ. Use `FauxMQ.stub/3`
 and `FauxMQ.expect/4` to script failures, reconnections, nack/unroutable
-behaviour, etc. Use `FauxMQ.reset!/1` between tests to clear stubs and call history.
+behaviour, etc.
+
+### Resetting state between tests
+
+- **`FauxMQ.reset!/1`** — Clears **stub/expect rules and call history** on that server's mock process only. In-memory queues, bindings, and consumers on the broker side **stay**.
+- **`FauxMQ.reset_test_broker_state/1`** — Clears mocks/history **and** in-memory queues, bindings, and consumers (TCP connections are not force-closed). Prefer this when published messages or queue state must not leak across examples in a long `mix test` run.
 
 ## Example integration test module
 
@@ -223,6 +257,8 @@ Application.put_env(:faux_mq, :debug, true)
 
 When `debug` is `true`, logs use standard Elixir `Logger` at levels `:info`, `:debug`, `:warning`, `:error` (e.g. `[FauxMQ.Connection]`, `[FauxMQ.Server]`, `[FauxMQ.Protocol]`). When `false` (default), none of these internal logs are printed.
 
+Other application env keys used by the library include `:default_host`, `:default_port`, and `:heartbeat_interval` (see `config/config.exs` in this repo).
+
 **Example (tests with debug on only for one test file):**
 
 ```elixir
@@ -249,67 +285,23 @@ mix deps.get
 mix test
 ```
 
-### Running in Docker
-
-To run format, Credo, Dialyzer and tests in a clean environment:
-
-```bash
-docker build -t faux-mq .
-docker run --rm faux-mq sh -c "mix format --check-formatted && mix credo --strict && mix dialyzer && mix test"
-```
+This repository does **not** include a `Dockerfile`; use a local Elixir/OTP install or any image that matches `mix.exs` (`elixir: "~> 1.13"`).
 
 ## CI
 
-The repository includes a GitHub Actions workflow that runs:
+GitHub Actions workflows include:
 
-- `mix format --check-formatted`
-- `mix credo --strict`
-- `mix dialyzer`
-- `mix test`
+- **CI** (`.github/workflows/ci.yml`): `mix format --check-formatted`, `mix credo --strict`, `mix test` on several OTP versions.
+- **Dialyzer** (`.github/workflows/dialyzer.yml`): `mix dialyzer` (separate job with PLT caching).
 
-## Publishing to Hex.pm
-
-1. Ensure `mix.exs` contains correct `:package` and `:description` metadata.  
-2. Build the package:
-
-   ```bash
-   MIX_ENV=prod mix hex.build
-   ```
-
-3. Publish the package:
-
-   ```bash
-   MIX_ENV=prod mix hex.publish
-   ```
-
-4. Tag the release in Git (use the same version as in `mix.exs`):
-
-   ```bash
-   git tag v0.1.0
-   git push --tags
-   ```
-
-## Using as a GitHub dependency
-
-In `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:faux_mq, git: "https://github.com/aszymanskiit/faux-mq.git", branch: "main"}
-  ]
-end
-```
+Other workflows handle docs, Hex audit, and release tags.
 
 ## Limitations
 
-- FauxMQ implements the **full AMQP frame layer** and a **minimal handshake and
-  channel lifecycle**.
-- Many methods (e.g. `queue.declare`, `exchange.declare`, transactions, confirms)
-  can be **mocked at protocol level**, but their **stateful broker semantics are
-  intentionally simplified**.
-- The focus is on: **protocol correctness, handshake, channel multiplexing,
-  heartbeats, and powerful mock control**, rather than full RabbitMQ feature parity.
+- **Framing and parsing** follow AMQP 0-9-1; supported **methods and broker semantics** are those needed for integration-style testing (handshake, channel lifecycle, routing to in-memory queues, consumers, etc.), not full RabbitMQ parity.
+- Routing is **simplified** (e.g. bindings and default-exchange behaviour are implemented in a minimal way compared to a real broker).
+- Many methods can still be **intercepted** via `stub/3` and `expect/4` for fault injection or custom replies.
+- The focus is on **protocol-level testing ergonomics** (mocks, history, pushed deliveries/frames), not throughput or production-grade queue semantics.
 
 ## License
 

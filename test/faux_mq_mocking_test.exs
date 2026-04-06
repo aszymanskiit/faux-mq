@@ -9,8 +9,7 @@ defmodule FauxMQ.MockingTest do
 
     FauxMQ.stub(server, %{class_id: 60, method_id: 40}, :close_connection)
 
-    {:ok, socket} =
-      :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :raw, active: false])
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :raw, active: false])
 
     :ok = :gen_tcp.send(socket, "AMQP" <> <<0, 0, 9, 1>>)
     {:ok, data} = :gen_tcp.recv(socket, 0, 1_000)
